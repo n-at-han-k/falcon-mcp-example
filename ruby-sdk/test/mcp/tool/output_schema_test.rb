@@ -1,0 +1,285 @@
+# frozen_string_literal: true
+
+require "test_helper"
+
+module MCP
+  class Tool
+    class OutputSchemaTest < ActiveSupport::TestCase
+      test "to_h returns a hash representation of the output schema" do
+        output_schema = OutputSchema.new(properties: { result: { type: "string" } }, required: ["result"])
+        assert_equal(
+          {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            type: "object",
+            properties: { result: { type: "string" } },
+            required: ["result"],
+          },
+          output_schema.to_h,
+        )
+      end
+
+      test "to_h preserves user-supplied $schema dialect" do
+        output_schema = OutputSchema.new(
+          "$schema": "https://json-schema.org/draft/2019-09/schema",
+          properties: { result: { type: "string" } },
+        )
+        assert_equal "https://json-schema.org/draft/2019-09/schema", output_schema.to_h[:"$schema"]
+      end
+
+      test "validate_result works when user supplies a 2020-12 $schema" do
+        output_schema = OutputSchema.new(
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          properties: { result: { type: "string" } },
+          required: ["result"],
+        )
+        assert_nothing_raised do
+          output_schema.validate_result({ result: "success" })
+        end
+        assert_raises(OutputSchema::ValidationError) do
+          output_schema.validate_result({ result: 123 })
+        end
+      end
+
+      test "validate_result validates result against the schema" do
+        output_schema = OutputSchema.new(properties: { result: { type: "string" } }, required: ["result"])
+        assert_nothing_raised do
+          output_schema.validate_result({ result: "success" })
+        end
+      end
+
+      test "validate_result validates result with additional properties against the schema when additionalProperties set to nil (default)" do
+        output_schema = OutputSchema.new(properties: { result: { type: "string" } }, required: ["result"])
+        assert_nothing_raised do
+          output_schema.validate_result({ result: "success", extra: 123 })
+        end
+      end
+
+      test "validate_result validates result with additional properties against the schema when additionalProperties set to true" do
+        output_schema = OutputSchema.new(properties: { result: { type: "string" } }, required: ["result"], additionalProperties: true)
+        assert_nothing_raised do
+          output_schema.validate_result({ result: "success", extra: 123 })
+        end
+      end
+
+      test "validate_result raises error with additional properties when additionalProperties set to false)" do
+        output_schema = OutputSchema.new(properties: { result: { type: "string" } }, required: ["result"], additionalProperties: false)
+        assert_raises(OutputSchema::ValidationError) do
+          output_schema.validate_result({ result: "success", extra: 123 })
+        end
+      end
+
+      test "validate_result raises error for invalid result" do
+        output_schema = OutputSchema.new(properties: { result: { type: "string" } }, required: ["result"])
+        assert_raises(OutputSchema::ValidationError) do
+          output_schema.validate_result({ result: 123 })
+        end
+      end
+
+      test "validate_result raises error for missing required field" do
+        output_schema = OutputSchema.new(properties: { result: { type: "string" } }, required: ["result"])
+        assert_raises(OutputSchema::ValidationError) do
+          output_schema.validate_result({})
+        end
+      end
+
+      test "valid schema initialization" do
+        schema = OutputSchema.new(properties: { foo: { type: "string" } }, required: ["foo"])
+        assert_equal(
+          {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            type: "object",
+            properties: { foo: { type: "string" } },
+            required: ["foo"],
+          },
+          schema.to_h,
+        )
+      end
+
+      test "invalid schema raises argument error" do
+        assert_raises(ArgumentError) do
+          OutputSchema.new(properties: { foo: { type: "invalid_type" } }, required: ["foo"])
+        end
+      end
+
+      test "schema without required arguments is valid" do
+        assert_nothing_raised do
+          OutputSchema.new(properties: { foo: { type: "string" } })
+        end
+      end
+
+      test "unexpected errors bubble up from validate_result" do
+        schema = OutputSchema.new(properties: { foo: { type: "string" } }, required: ["foo"])
+
+        JSONSchemer::Schema.any_instance.stubs(:validate).raises("unexpected error")
+
+        assert_raises(RuntimeError) do
+          schema.validate_result(foo: "bar")
+        end
+      end
+
+      test "accepts schemas with $ref references" do
+        schema = OutputSchema.new(
+          properties: {
+            foo: { type: "string" },
+          },
+          definitions: {
+            bar: { type: "string" },
+          },
+          required: ["foo"],
+        )
+        assert_includes schema.to_h.keys, :definitions
+      end
+
+      test "accepts schemas with $ref string key and includes $ref in to_h" do
+        schema = OutputSchema.new({
+          "properties" => {
+            "foo" => { "$ref" => "#/definitions/bar" },
+          },
+          "definitions" => {
+            "bar" => { "type" => "string" },
+          },
+        })
+        assert_equal "#/definitions/bar", schema.to_h[:properties][:foo][:$ref]
+      end
+
+      test "accepts schemas with $ref symbol key and includes $ref in to_h" do
+        schema = OutputSchema.new({
+          properties: {
+            foo: { :$ref => "#/definitions/bar" },
+          },
+          definitions: {
+            bar: { type: "string" },
+          },
+        })
+        assert_equal "#/definitions/bar", schema.to_h[:properties][:foo][:$ref]
+      end
+
+      test "== compares two output schemas with the same properties and required fields" do
+        schema1 = OutputSchema.new(properties: { foo: { type: "string" } }, required: ["foo"])
+        schema2 = OutputSchema.new(properties: { foo: { type: "string" } }, required: ["foo"])
+        assert_equal schema1, schema2
+
+        schema3 = OutputSchema.new(properties: { bar: { type: "string" } }, required: ["bar"])
+        refute_equal schema1, schema3
+
+        schema4 = OutputSchema.new(properties: { foo: { type: "string" } }, required: ["bar"])
+        refute_equal schema1, schema4
+
+        schema5 = OutputSchema.new(properties: { bar: { type: "string" } }, required: ["foo"])
+        refute_equal schema1, schema5
+      end
+
+      test "empty schema is valid" do
+        schema = OutputSchema.new
+        assert_equal(
+          { "$schema": "https://json-schema.org/draft/2020-12/schema", type: "object" },
+          schema.to_h,
+        )
+      end
+
+      test "validates complex nested schemas" do
+        schema = OutputSchema.new(
+          properties: {
+            data: {
+              type: "object",
+              properties: {
+                items: { type: "array", items: { type: "string" } },
+                count: { type: "integer", minimum: 0 },
+              },
+              required: ["items"],
+            },
+          },
+          required: ["data"],
+        )
+
+        valid_result = {
+          data: {
+            items: ["item1", "item2"],
+            count: 2,
+          },
+        }
+
+        assert_nothing_raised do
+          schema.validate_result(valid_result)
+        end
+
+        invalid_result = {
+          data: {
+            items: [123, 456], # Should be strings
+            count: 2,
+          },
+        }
+
+        assert_raises(OutputSchema::ValidationError) do
+          schema.validate_result(invalid_result)
+        end
+      end
+
+      test "does not inject a root type into a root-level oneOf schema" do
+        # Per SEP-2106, an output schema may be any JSON Schema 2020-12 document.
+        # Merging `type: "object"` into a root combinator would produce a wrong schema.
+        schema = OutputSchema.new(oneOf: [{ type: "string" }, { type: "integer" }])
+
+        refute schema.to_h.key?(:type)
+        assert_equal [{ type: "string" }, { type: "integer" }], schema.to_h[:oneOf]
+        assert_nothing_raised { schema.validate_result("text") }
+        assert_nothing_raised { schema.validate_result(42) }
+        assert_raises(OutputSchema::ValidationError) { schema.validate_result(1.5) }
+      end
+
+      test "does not inject a root type into a root-level $ref schema" do
+        schema = OutputSchema.new(
+          "$ref": "#/$defs/result",
+          "$defs": { result: { type: "string" } },
+        )
+
+        refute schema.to_h.key?(:type)
+        assert_nothing_raised { schema.validate_result("text") }
+        assert_raises(OutputSchema::ValidationError) { schema.validate_result(42) }
+      end
+
+      test "allows primitive root schemas" do
+        schema = OutputSchema.new(type: "string")
+
+        assert_nothing_raised { schema.validate_result("text") }
+        assert_raises(OutputSchema::ValidationError) { schema.validate_result(42) }
+      end
+
+      test "does not inject a root type into a root-level enum schema" do
+        schema = OutputSchema.new(enum: ["red", "green", "blue"])
+
+        refute schema.to_h.key?(:type)
+        assert_nothing_raised { schema.validate_result("red") }
+        assert_raises(OutputSchema::ValidationError) { schema.validate_result("yellow") }
+      end
+
+      test "defaults a properties-only schema to a root object" do
+        # Wire-format regression: the common shorthand keeps serializing with the injected `type: "object"`.
+        schema = OutputSchema.new(properties: { result: { type: "string" } })
+
+        assert_equal "object", schema.to_h[:type]
+      end
+
+      test "allow to declare array schemas" do
+        schema = OutputSchema.new({
+          type: "array",
+          items: {
+            properties: { foo: { type: "string" } },
+            required: ["foo"],
+          },
+        })
+        assert_equal(
+          {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            type: "array",
+            items: {
+              properties: { foo: { type: "string" } },
+              required: ["foo"],
+            },
+          },
+          schema.to_h,
+        )
+      end
+    end
+  end
+end

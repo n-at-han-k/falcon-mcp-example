@@ -1,0 +1,14 @@
+getting-started:
+  order: 1
+rails-integration:
+  order: 2
+deployment:
+  order: 3
+performance-tuning:
+  order: 4
+websockets:
+  order: 5
+interim-responses:
+  order: 6
+how-it-works:
+  order: 10
